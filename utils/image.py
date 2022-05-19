@@ -1,7 +1,10 @@
+import os
+
 import numpy as np
 from PIL import Image
 import torch
 import threading
+import hickle as hkl
 
 _palette = [
     0, 0, 0, 128, 0, 0, 0, 128, 0, 128, 128, 0, 0, 0, 128, 128, 0, 128, 0, 128,
@@ -56,7 +59,6 @@ _palette = [
 
 
 def label2colormap(label):
-
     m = label.astype(np.uint8)
     r, c = m.shape
     cmap = np.zeros((r, c, 3), dtype=np.uint8)
@@ -105,6 +107,46 @@ def save_mask(mask_tensor, path, squeeze_idx=None):
     threading.Thread(target=_save_mask, args=[mask, path, squeeze_idx]).start()
 
 
+def _save_prob(mask, path, obj_path, nobj_path, squeeze_idx=None, new_obj=True):
+    if new_obj:
+        np.save(path, mask)
+        np.save(obj_path, squeeze_idx)
+        np.save(nobj_path, new_obj)
+    else:
+        np.save(path, mask)
+        np.save(obj_path, squeeze_idx)
+        np.save(nobj_path, new_obj)
+
+
+def save_prob(prob_tensor, path, obj_path, nobj_path, squeeze_idx=None, new_obj=False):
+    # for not new obj [11,h,w]
+    mask = prob_tensor.cpu().numpy().astype(np.float32)
+    threading.Thread(target=_save_prob, args=[mask, path, obj_path, nobj_path, squeeze_idx, new_obj]).start()
+
+
+def save_probs(seq_pred_probs):
+    # for not new obj [11,h,w]
+    prob_len = len(seq_pred_probs)
+    h, w = seq_pred_probs[0]['mask'].size()[2:]
+    out_probs = torch.zeros(prob_len, 11, h, w, dtype=torch.float32, )
+    out_idxs = []
+    out_nid = []
+    out_names=[]
+    for i in range(prob_len):
+        out_probs[i] = seq_pred_probs[i]['mask']
+        out_idxs.append(seq_pred_probs[i]['obj_idx'])
+        out_nid.append(seq_pred_probs[i]['new_obj'])
+        out_names.append(seq_pred_probs[i]['imgname'])
+    out_path = seq_pred_probs[0]['path']
+    out_probs = (out_probs.cpu().detach().numpy() * 255).astype(np.uint8)
+
+    os.makedirs(out_path, exist_ok=True)
+    hkl.dump(out_probs, os.path.join(out_path, 'prob' + '.hkl'), mode='w', compression='lzf')
+    hkl.dump(out_idxs, os.path.join(out_path, 'obj_idx' + '.hkl'), mode='w')
+    hkl.dump(out_nid, os.path.join(out_path, 'new_obj' + '.hkl'), mode='w')
+    hkl.dump(out_names, os.path.join(out_path, 'img_name' + '.hkl'), mode='w')
+
+
 def flip_tensor(tensor, dim=0):
     inv_idx = torch.arange(tensor.size(dim) - 1, -1, -1,
                            device=tensor.device).long()
@@ -113,7 +155,6 @@ def flip_tensor(tensor, dim=0):
 
 
 def shuffle_obj_mask(mask):
-
     bs, obj_num, _, _ = mask.size()
     new_masks = []
     for idx in range(bs):
