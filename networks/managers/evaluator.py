@@ -12,7 +12,7 @@ from torchvision import transforms
 from dataloaders.eval_datasets import YOUTUBEVOS_Test, YOUTUBEVOS_DenseTest, DAVIS_Test, EVAL_TEST
 import dataloaders.video_transforms as tr
 
-from utils.image import flip_tensor, save_mask
+from utils.image import flip_tensor, save_mask, save_prob, save_probs
 from utils.checkpoint import load_network
 from utils.eval import zip_folder
 
@@ -30,7 +30,7 @@ class Evaluator(object):
         self.info_queue = info_queue
 
         self.print_log("Exp {}:".format(cfg.EXP_NAME))
-        self.print_log(json.dumps(cfg.__dict__, indent=4, sort_keys=True))
+        # self.print_log(json.dumps(cfg.__dict__, indent=4, sort_keys=True))
 
         print("Use GPU {} for evaluating.".format(self.gpu))
         torch.cuda.set_device(self.gpu)
@@ -109,13 +109,18 @@ class Evaluator(object):
         if len(cfg.TEST_MULTISCALE) > 1:
             eval_name += '_ms_' + str(cfg.TEST_MULTISCALE).replace(
                 '.', 'dot').replace('[', '').replace(']', '').replace(
-                    ', ', '_')
+                ', ', '_')
 
         if 'youtubevos' in cfg.TEST_DATASET:
             year = int(cfg.TEST_DATASET[-4:])
             self.result_root = os.path.join(cfg.DIR_EVALUATION,
                                             cfg.TEST_DATASET, eval_name,
                                             'Annotations')
+
+            # for merge
+            self.result_prob_root = os.path.join(cfg.DIR_EVALUATION,
+                                                 cfg.TEST_DATASET, eval_name + '_prob', )
+            os.makedirs(self.result_prob_root, exist_ok=True)
             if '_all_frames' in cfg.TEST_DATASET_SPLIT:
                 split = cfg.TEST_DATASET_SPLIT.split('_')[0]
                 youtubevos_test = YOUTUBEVOS_DenseTest
@@ -236,16 +241,22 @@ class Evaluator(object):
                                             num_workers=cfg.TEST_WORKERS,
                                             pin_memory=True)
 
+                # for merge
+                seq_prob_dir = os.path.join(self.result_prob_root, seq_name)
+                os.makedirs(seq_prob_dir, exist_ok=True)
                 if 'all_frames' in cfg.TEST_DATASET_SPLIT:
                     images_sparse = seq_dataset.images_sparse
                     seq_dir_sparse = os.path.join(self.result_root_sparse,
                                                   seq_name)
+
                     if not os.path.exists(seq_dir_sparse):
                         os.makedirs(seq_dir_sparse)
 
                 seq_total_time = 0
                 seq_total_frame = 0
+                # for merge
                 seq_pred_masks = {'dense': [], 'sparse': []}
+                seq_pred_probs = {'dense': [], 'sparse': []}
                 seq_timers = []
 
                 for frame_idx, samples in enumerate(seq_dataloader):
@@ -322,6 +333,34 @@ class Evaluator(object):
                             if not is_flipped and current_label is not None and new_obj_label is None:
                                 new_obj_label = current_label
 
+                        # for merge
+                        if frame_idx == 0:
+                            seq_pred_probs['dense'].append({
+                                'path':
+                                    os.path.join(self.result_prob_root, seq_name, ),
+                                'mask':
+                                    current_label.cpu(),
+                                'obj_idx':
+                                    obj_idx,
+                                'new_obj':
+                                    True,
+                                'imgname':
+                                    imgname[0].split('.')[0]
+                            })
+                            if 'all_frames' in cfg.TEST_DATASET_SPLIT and imgname in images_sparse:
+                                seq_pred_probs['sparse'].append({
+                                    'path':
+                                        os.path.join(self.result_prob_root, seq_name, ),
+                                    'mask':
+                                        current_label.cpu(),
+                                    'obj_idx':
+                                        obj_idx,
+                                    'new_obj':
+                                        True,
+                                    'imgname':
+                                        imgname[0].split('.')[0]
+                                })
+
                     if frame_idx > 0:
                         all_preds = torch.cat(all_preds, dim=0)
                         pred_prob = torch.mean(all_preds, dim=0, keepdim=True)
@@ -332,7 +371,7 @@ class Evaluator(object):
                         if new_obj_label is not None:
                             keep = (new_obj_label == 0).float()
                             pred_label = pred_label * \
-                                keep + new_obj_label * (1 - keep)
+                                         keep + new_obj_label * (1 - keep)
                             new_obj_nums = [int(pred_label.max().item())]
 
                             if cfg.TEST_FLIP:
@@ -393,37 +432,98 @@ class Evaluator(object):
                             obj_num = obj_nums[0]
                             print(
                                 'GPU {} - Frame: {} - Obj Num: {}, Time: {}ms'.
-                                format(self.gpu, imgname[0].split('.')[0],
-                                       obj_num, int(one_frametime * 1e3)))
+                                    format(self.gpu, imgname[0].split('.')[0],
+                                           obj_num, int(one_frametime * 1e3)))
 
                         # Save result
                         seq_pred_masks['dense'].append({
                             'path':
-                            os.path.join(self.result_root, seq_name,
-                                         imgname[0].split('.')[0] + '.png'),
+                                os.path.join(self.result_root, seq_name,
+                                             imgname[0].split('.')[0] + '.png'),
                             'mask':
-                            pred_label,
+                                pred_label,
                             'obj_idx':
-                            obj_idx
+                                obj_idx
                         })
                         if 'all_frames' in cfg.TEST_DATASET_SPLIT and imgname in images_sparse:
                             seq_pred_masks['sparse'].append({
                                 'path':
-                                os.path.join(self.result_root_sparse, seq_name,
-                                             imgname[0].split('.')[0] +
-                                             '.png'),
+                                    os.path.join(self.result_root_sparse, seq_name,
+                                                 imgname[0].split('.')[0] +
+                                                 '.png'),
                                 'mask':
-                                pred_label,
+                                    pred_label,
                                 'obj_idx':
-                                obj_idx
+                                    obj_idx
                             })
+                        # for merge
+                        if new_obj_label is not None:
+                            seq_pred_probs['dense'].append({
+                                'path':
+                                    os.path.join(self.result_prob_root, seq_name, ),
+                                'mask':
+                                    pred_label.cpu(),
+                                'obj_idx':
+                                    obj_idx,
+                                'new_obj':
+                                    True,
+                                'imgname':
+                                    imgname[0].split('.')[0]
+                            })
+                            if 'all_frames' in cfg.TEST_DATASET_SPLIT and imgname in images_sparse:
+                                seq_pred_probs['sparse'].append({
+                                    'path':
+                                        os.path.join(self.result_prob_root, seq_name, ),
+                                    'mask':
+                                        pred_label.cpu(),
+                                    'obj_idx':
+                                        obj_idx,
+                                    'new_obj':
+                                        True,
+                                    'imgname':
+                                        imgname[0].split('.')[0]
+                                })
+                        else:
+                            seq_pred_probs['dense'].append({
+                                'path':
+                                    os.path.join(self.result_prob_root, seq_name, ),
+                                'mask':
+                                    pred_prob.cpu(),
+                                'obj_idx':
+                                    obj_idx,
+                                'new_obj':
+                                    False,
+                                'imgname':
+                                    imgname[0].split('.')[0]
+                            })
+                            if 'all_frames' in cfg.TEST_DATASET_SPLIT and imgname in images_sparse:
+                                seq_pred_probs['sparse'].append({
+                                    'path':
+                                        os.path.join(self.result_prob_root, seq_name),
+                                    'mask':
+                                        pred_prob.cpu(),
+                                    'obj_idx':
+                                        obj_idx,
+                                    'new_obj':
+                                        False,
+                                    'imgname':
+                                        imgname[0].split('.')[0]
+                                })
 
                 # Save result
                 for mask_result in seq_pred_masks['dense'] + seq_pred_masks[
-                        'sparse']:
+                    'sparse']:
                     save_mask(mask_result['mask'].squeeze(0).squeeze(0),
                               mask_result['path'], mask_result['obj_idx'])
                 del (seq_pred_masks)
+
+                # for merge
+                if 'all_frames' in cfg.TEST_DATASET_SPLIT:
+                    save_probs(seq_pred_probs['sparse'])
+                else:
+                    save_probs(seq_pred_probs['dense'])
+
+                del (seq_pred_probs)
 
                 for timer in seq_timers:
                     torch.cuda.synchronize()
@@ -439,12 +539,12 @@ class Evaluator(object):
                 total_sfps += seq_avg_time_per_frame
                 avg_sfps = total_sfps / processed_video_num
                 max_mem = torch.cuda.max_memory_allocated(
-                    device=self.gpu) / (1024.**3)
+                    device=self.gpu) / (1024. ** 3)
                 print(
                     "GPU {} - Seq {} - FPS: {:.2f}. All-Frame FPS: {:.2f}, All-Seq FPS: {:.2f}, Max Mem: {:.2f}G"
-                    .format(self.gpu, seq_name, 1. / seq_avg_time_per_frame,
-                            1. / total_avg_time_per_frame, 1. / avg_sfps,
-                            max_mem))
+                        .format(self.gpu, seq_name, 1. / seq_avg_time_per_frame,
+                                1. / total_avg_time_per_frame, 1. / avg_sfps,
+                                max_mem))
 
         if self.seq_queue is not None:
             if self.rank != 0:
@@ -468,14 +568,14 @@ class Evaluator(object):
                 all_reduced_avg_sfps = total_sfps / processed_video_num
                 print(
                     "GPU {} - All-Frame FPS: {:.2f}, All-Seq FPS: {:.2f}, Max Mem: {:.2f}G"
-                    .format(list(range(self.gpu_num)),
-                            1. / all_reduced_total_avg_time_per_frame,
-                            1. / all_reduced_avg_sfps, max_mem))
+                        .format(list(range(self.gpu_num)),
+                                1. / all_reduced_total_avg_time_per_frame,
+                                1. / all_reduced_avg_sfps, max_mem))
         else:
             print(
                 "GPU {} - All-Frame FPS: {:.2f}, All-Seq FPS: {:.2f}, Max Mem: {:.2f}G"
-                .format(self.gpu, 1. / total_avg_time_per_frame, 1. / avg_sfps,
-                        max_mem))
+                    .format(self.gpu, 1. / total_avg_time_per_frame, 1. / avg_sfps,
+                            max_mem))
 
         if self.rank == 0:
             zip_folder(self.source_folder, self.zip_dir)
